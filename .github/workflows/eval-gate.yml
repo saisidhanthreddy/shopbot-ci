@@ -1,0 +1,64 @@
+name: ShopBot eval gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:   # adds a "Run workflow" button on the Actions tab
+
+jobs:
+  unit-tests:
+    name: Unit tests (no LLM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+
+  eval-gate:
+    name: Eval gate (real model)
+    needs: unit-tests          # only spend minutes on the model if the code works
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      BOT_MODEL: llama3.2:3b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama and pull the model
+        run: |
+          if ! curl -sf http://localhost:11434/api/tags > /dev/null; then
+            nohup ollama serve > ollama.log 2>&1 &
+          fi
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags > /dev/null && break
+            sleep 2
+          done
+          ollama pull "$BOT_MODEL"
+
+      - name: Run evals
+        run: python -m evals.run_evals
+
+      - name: Show results on the run page
+        if: always()
+        run: |
+          if [ -f results/summary.md ]; then cat results/summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: results/
